@@ -475,6 +475,10 @@ export default function App() {
 
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (SpeechRecognition) {
+      // Initialize speech synthesis immediately on user interaction to unlock audio on iOS/iPadOS
+      const unlockAudio = new SpeechSynthesisUtterance('');
+      window.speechSynthesis.speak(unlockAudio);
+
       const recognition = new SpeechRecognition();
       recognition.continuous = true;
       recognition.interimResults = true;

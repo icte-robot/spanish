@@ -217,7 +217,11 @@ export default function App() {
   };
 
   const speak = (text: string, forceIdle = false) => {
-    speechSynthesis.cancel();
+    // iOS Safari workaround: resume the audio context before canceling
+    if (window.speechSynthesis) {
+      window.speechSynthesis.resume();
+    }
+    window.speechSynthesis.cancel();
     isSpeakingRef.current = true; // Start speaking
     setIsTalking(true);
     currentSpeakingTextRef.current = text;
@@ -452,6 +456,15 @@ export default function App() {
       return;
     }
 
+    // CRITICAL FOR iOS/iPadOS: Speech synthesis MUST be triggered synchronously 
+    // inside the user interaction event handler, BEFORE any async/await calls.
+    if (window.speechSynthesis) {
+      window.speechSynthesis.resume();
+    }
+    const initialMessage = "Hi Bella! It's nice talking to you! What are you doing?";
+    setMessages([{ sender: 'bot', text: initialMessage }]);
+    speak(initialMessage);
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       micStreamRef.current = stream;
@@ -475,10 +488,6 @@ export default function App() {
 
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (SpeechRecognition) {
-      // Initialize speech synthesis immediately on user interaction to unlock audio on iOS/iPadOS
-      const unlockAudio = new SpeechSynthesisUtterance('');
-      window.speechSynthesis.speak(unlockAudio);
-
       const recognition = new SpeechRecognition();
       recognition.continuous = true;
       recognition.interimResults = true;
@@ -653,10 +662,6 @@ export default function App() {
       setIsListening(true);
       isListeningRef.current = true;
       resetSleepTimer();
-
-      const initialMessage = "Hi Bella! It's nice talking to you! What are you doing?";
-      setMessages([{ sender: 'bot', text: initialMessage }]);
-      speak(initialMessage);
 
     } else {
       console.warn('Speech recognition not supported.');

@@ -60,22 +60,14 @@ export default function App() {
     
     if (!cleanTranscript) return false;
 
-    const tWords = cleanTranscript.split(/\s+/);
-    const sWords = cleanSarah.split(/\s+/);
-    
-    const commandWords = ['stop', 'wait', 'no', 'yes', 'sarah', 'bella', 'pause', 'quiet'];
-    const hasCommandWord = tWords.some(w => commandWords.includes(w));
-
-    // If it's a short phrase with a command word, never treat it as an echo
-    if (tWords.length <= 3 && hasCommandWord) {
-      return false;
-    }
-
-    // Check for exact substring match (very likely an echo)
+    // Check for exact substring match FIRST (very likely an echo)
     if (cleanSarah.includes(cleanTranscript)) {
       return true;
     }
 
+    const tWords = cleanTranscript.split(/\s+/);
+    const sWords = cleanSarah.split(/\s+/);
+    
     // Check for high word overlap (handles slight misrecognitions of the echo)
     let matchCount = 0;
     for (const w of tWords) {
@@ -84,13 +76,13 @@ export default function App() {
     
     const matchPercentage = matchCount / tWords.length;
     
-    // If it's a short phrase (1-2 words) without a command word, require 100% match
+    // If it's a short phrase (1-2 words), require 100% match
     if (tWords.length <= 2) {
       return matchPercentage === 1;
     }
     
-    // For longer phrases, if more than 60% of the words match, it's probably an echo
-    return matchPercentage >= 0.6;
+    // For longer phrases, if more than 50% of the words match, it's probably an echo
+    return matchPercentage >= 0.5;
   };
 
   const resetSleepTimer = () => {
@@ -519,12 +511,13 @@ export default function App() {
             }
 
             // Interruption logic: Only interrupt if user explicitly says a command word
-            const commandWords = ['stop', 'wait', 'no', 'sarah', 'bella', 'pause', 'quiet', 'yes', 'yeah', 'ok', 'okay'];
-            const tWords = transcript.toLowerCase().replace(/[^\w\s]/g, '').split(/\s+/);
-            const hasCommandWord = tWords.some(w => commandWords.includes(w));
+            const cleanT = transcript.toLowerCase().replace(/[^\w\s]/g, '').trim();
+            const commandWords = ['stop', 'wait', 'pause', 'quiet'];
+            const tWords = cleanT.split(/\s+/);
+            const hasCommandWord = commandWords.some(w => tWords.includes(w));
             
             // If it has a command word and is short, interrupt
-            if (hasCommandWord && tWords.length <= 5) {
+            if (hasCommandWord && tWords.length <= 3) {
               if (isSarahSpeaking) {
                 speechSynthesis.cancel();
                 isSpeakingRef.current = false;

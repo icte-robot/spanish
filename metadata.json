@@ -1,0 +1,7 @@
+{
+  "name": "Bella",
+  "description": "A friendly AI companion for an 8-year-old girl named Bella. Sarah can chat about school, friends, tell stories, and teach Spanish.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}

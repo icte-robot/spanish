@@ -239,19 +239,36 @@ export default function App() {
 
     // Global click/touch listener to keep speech synthesis "blessed"
     const resumeSpeech = () => {
-      if (window.speechSynthesis && window.speechSynthesis.paused) {
-        window.speechSynthesis.resume();
+      console.log("User interaction detected, attempting to resume speech synthesis...");
+      if (window.speechSynthesis) {
+        if (window.speechSynthesis.paused) {
+          window.speechSynthesis.resume();
+        }
+        // On iOS, sometimes we need to kick it with a silent utterance on every interaction
+        const silent = new SpeechSynthesisUtterance('');
+        silent.volume = 0;
+        window.speechSynthesis.speak(silent);
       }
     };
     window.addEventListener('click', resumeSpeech);
     window.addEventListener('touchstart', resumeSpeech);
 
+    // Monitor voices
+    const handleVoicesChanged = () => {
+      const voices = window.speechSynthesis.getVoices();
+      console.log(`Speech synthesis voices updated. Total voices: ${voices.length}`);
+    };
+    window.speechSynthesis.addEventListener('voiceschanged', handleVoicesChanged);
+
     return () => {
       clearInterval(interval);
       window.removeEventListener('click', resumeSpeech);
       window.removeEventListener('touchstart', resumeSpeech);
+      window.speechSynthesis.removeEventListener('voiceschanged', handleVoicesChanged);
     };
   }, []);
+
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
   const unlockAudioSystem = () => {
     console.log("Attempting to unlock audio system...");
@@ -285,8 +302,13 @@ export default function App() {
       window.speechSynthesis.resume();
 
       // 4. Speak a real word to truly "bless" the engine
-      const prime = new SpeechSynthesisUtterance('Hello Bella');
+      // On iOS, we sometimes need to speak an empty string first
+      const silent = new SpeechSynthesisUtterance('');
+      window.speechSynthesis.speak(silent);
+
+      const prime = new SpeechSynthesisUtterance('Hello Bella, I am ready!');
       prime.volume = 1.0;
+      prime.rate = 1.0;
       window.speechSynthesis.speak(prime);
       
       console.log("Audio system unlock commands sent");
@@ -296,8 +318,15 @@ export default function App() {
   };
 
   const speak = (text: string, forceIdle = false) => {
+    console.log("Sarah is preparing to speak:", text.substring(0, 50) + "...");
+    
     // iOS Safari workaround: resume the audio context before canceling
     if (window.speechSynthesis) {
+      console.log("SpeechSynthesis state:", {
+        speaking: window.speechSynthesis.speaking,
+        pending: window.speechSynthesis.pending,
+        paused: window.speechSynthesis.paused
+      });
       window.speechSynthesis.resume();
     }
     
@@ -376,16 +405,18 @@ export default function App() {
     utterancesRef.current = utterances;
 
     let utteranceIndex = 0;
-    const speakNext = () => {
+  const speakNext = () => {
       if (safetyTimeoutRef.current) clearTimeout(safetyTimeoutRef.current);
 
       if (!isSpeakingRef.current) {
+        console.log("Speak aborted: isSpeakingRef is false");
         utterancesRef.current = [];
         return;
       }
 
       if (utteranceIndex < utterancesRef.current.length) {
         const utterance = utterancesRef.current[utteranceIndex++];
+        console.log(`Speaking segment ${utteranceIndex}/${utterancesRef.current.length}: "${utterance.text.substring(0, 30)}..." [${utterance.lang}]`);
         
         const handleNext = () => {
           if (safetyTimeoutRef.current) clearTimeout(safetyTimeoutRef.current);
@@ -747,7 +778,7 @@ export default function App() {
   if (!isListening) {
     return (
       <div className="flex flex-col h-screen font-sans bg-black items-center justify-center text-center p-6">
-        <div className="scale-150 mb-12">
+        <div className="scale-125 md:scale-150 mb-12">
           <SarahFace emotion="happy" isTalking={false} />
         </div>
         <h1 className="text-5xl font-serif text-white font-bold mt-8">Hi, I'm Sarah!</h1>
@@ -781,28 +812,38 @@ export default function App() {
   return (
     <div className="flex flex-col h-screen font-sans bg-black overflow-hidden">
       {/* Immersive Sarah Display Area - 2/3 of the screen */}
-      <div className="h-[66vh] bg-black backdrop-blur-2xl shadow-lg border-b border-white/10 flex flex-col items-center justify-center relative transition-all duration-500">
+      <div className="h-[60vh] md:h-[66vh] bg-black backdrop-blur-2xl shadow-lg border-b border-white/10 flex flex-col items-center justify-center relative transition-all duration-500 overflow-hidden">
         {/* Audio Visualizer Ring */}
         <div 
-          className={`absolute w-64 h-64 rounded-full border-4 transition-all duration-75 ${isTalking ? 'border-green-400 shadow-[0_0_30px_rgba(74,222,128,0.5)]' : 'border-white/20'}`}
+          className={`absolute w-48 h-48 md:w-64 md:h-64 rounded-full border-4 transition-all duration-75 ${isTalking ? 'border-green-400 shadow-[0_0_30px_rgba(74,222,128,0.5)]' : 'border-white/20'}`}
           style={{ 
             transform: `scale(${1 + (micLevel / 255) * 0.5 + (isTalking ? 0.1 : 0)})`,
             opacity: (micLevel > 10 || isTalking) ? 0.8 : 0.1
           }}
         ></div>
-        <div className={`scale-[2.5] transition-transform duration-500 relative z-10 ${isTalking ? 'animate-pulse' : ''}`}>
+        <div className={`scale-[1.4] md:scale-[2.0] transition-transform duration-500 relative z-10 ${isTalking ? 'animate-pulse' : ''}`}>
           <SarahFace emotion={currentEmotion} isTalking={isTalking} />
         </div>
         <div className="absolute bottom-8 text-center">
           {/* Text and status indicators removed so the face stands alone */}
         </div>
-        <div className="absolute top-4 right-6 flex items-center gap-4">
-           <button 
-             onClick={unlockAudioSystem}
-             className="px-3 py-1 bg-white/10 hover:bg-white/20 text-white rounded-md text-[10px] font-bold transition-colors border border-white/20 flex items-center gap-1"
-           >
-             <Mic size={10}/> FIX SOUND
-           </button>
+        <div className="absolute top-4 right-6 flex items-center gap-2 md:gap-4">
+           {isIOS && (
+             <button 
+               onClick={unlockAudioSystem}
+               className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-full text-[12px] font-bold transition-all shadow-lg border-2 border-white/30 flex items-center gap-2 animate-pulse"
+             >
+               <Mic size={14}/> FIX SOUND (IPAD)
+             </button>
+           )}
+           {!isIOS && (
+             <button 
+               onClick={unlockAudioSystem}
+               className="px-3 py-1 bg-white/10 hover:bg-white/20 text-white rounded-md text-[10px] font-bold transition-colors border border-white/20 flex items-center gap-1"
+             >
+               <Mic size={10}/> FIX SOUND
+             </button>
+           )}
            <button 
              onClick={() => {
                setMessages([]);

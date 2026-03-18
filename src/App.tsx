@@ -216,12 +216,82 @@ export default function App() {
     spanishPhraseRef.current = phrase;
   };
 
+  useEffect(() => {
+    // Workaround for speech synthesis hanging on some browsers (especially iOS Safari)
+    const interval = setInterval(() => {
+      if (isSpeakingRef.current && window.speechSynthesis && window.speechSynthesis.speaking) {
+        window.speechSynthesis.pause();
+        window.speechSynthesis.resume();
+      }
+    }, 5000);
+
+    // Global click/touch listener to keep speech synthesis "blessed"
+    const resumeSpeech = () => {
+      if (window.speechSynthesis && window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+      }
+    };
+    window.addEventListener('click', resumeSpeech);
+    window.addEventListener('touchstart', resumeSpeech);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('click', resumeSpeech);
+      window.removeEventListener('touchstart', resumeSpeech);
+    };
+  }, []);
+
+  const unlockAudioSystem = async () => {
+    if (!window.speechSynthesis) return;
+
+    try {
+      // 1. Resume AudioContext if it exists
+      if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
+        await audioContextRef.current.resume();
+      }
+
+      // 2. Play a chime using Web Audio (more reliable than SpeechSynthesis for initial unlock)
+      if (audioContextRef.current) {
+        const osc = audioContextRef.current.createOscillator();
+        const gain = audioContextRef.current.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(880, audioContextRef.current.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(440, audioContextRef.current.currentTime + 0.5);
+        gain.gain.setValueAtTime(0, audioContextRef.current.currentTime);
+        gain.gain.linearRampToValueAtTime(0.5, audioContextRef.current.currentTime + 0.05);
+        gain.gain.linearRampToValueAtTime(0, audioContextRef.current.currentTime + 0.5);
+        osc.connect(gain);
+        gain.connect(audioContextRef.current.destination);
+        osc.start();
+        osc.stop(audioContextRef.current.currentTime + 0.5);
+      }
+
+      // 3. Force SpeechSynthesis out of any stuck state
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.resume();
+
+      // 4. Speak a real word to truly "bless" the engine
+      const prime = new SpeechSynthesisUtterance('Hello Bella');
+      prime.volume = 1.0;
+      window.speechSynthesis.speak(prime);
+      
+      console.log("Audio system unlocked");
+    } catch (e) {
+      console.error("Failed to unlock audio:", e);
+    }
+  };
+
   const speak = (text: string, forceIdle = false) => {
     // iOS Safari workaround: resume the audio context before canceling
     if (window.speechSynthesis) {
       window.speechSynthesis.resume();
     }
-    window.speechSynthesis.cancel();
+    
+    // Only cancel if already speaking to avoid unnecessary state resets on iOS
+    if (window.speechSynthesis.speaking) {
+      window.speechSynthesis.cancel();
+    }
+    
     isSpeakingRef.current = true; // Start speaking
     setIsTalking(true);
     currentSpeakingTextRef.current = text;
@@ -230,10 +300,6 @@ export default function App() {
     const emotion = detectEmotionFromText(text);
     setCurrentEmotion(emotion);
 
-    // We don't abort recognition here anymore to allow interruptions
-    // Instead, we'll handle the "echo" by ignoring results while isSpeakingRef is true
-    // UNLESS it's a clear interruption attempt.
-    
     const parts = text.split(/(<spanish>.*?<\/spanish>)/g).filter(Boolean);
     const utterances: SpeechSynthesisUtterance[] = [];
     const spanishPhrasesSeen = new Set<string>();
@@ -259,29 +325,22 @@ export default function App() {
           }
         }
         
-        // Try to find a high-quality female voice for Spanish
+        // Try to find a high-quality female voice
+        const voices = window.speechSynthesis.getVoices();
         if (isSpanish) {
-          const voices = window.speechSynthesis.getVoices();
-          // Look for common high-quality female Spanish voices
           const preferredSpanishVoice = voices.find(v => 
             v.lang.startsWith('es') && 
             (v.name.includes('Google') || v.name.includes('Monica') || v.name.includes('Lucia') || v.name.includes('Helena') || v.name.includes('Female'))
           ) || voices.find(v => v.lang.startsWith('es'));
           
-          if (preferredSpanishVoice) {
-            utterance.voice = preferredSpanishVoice;
-          }
+          if (preferredSpanishVoice) utterance.voice = preferredSpanishVoice;
         } else {
-          // Also try to find a nice female voice for Sarah's English
-          const voices = window.speechSynthesis.getVoices();
           const preferredEnglishVoice = voices.find(v => 
             v.lang.startsWith('en') && 
             (v.name.includes('Google') || v.name.includes('Samantha') || v.name.includes('Victoria') || v.name.includes('Female'))
           ) || voices.find(v => v.lang.startsWith('en'));
           
-          if (preferredEnglishVoice) {
-            utterance.voice = preferredEnglishVoice;
-          }
+          if (preferredEnglishVoice) utterance.voice = preferredEnglishVoice;
         }
         
         utterances.push(utterance);
@@ -298,11 +357,10 @@ export default function App() {
       updateConversationState('LISTENING_FOR_REPLY');
     }
 
-    utterancesRef.current = utterances; // Store in ref to prevent garbage collection
+    utterancesRef.current = utterances;
 
     let utteranceIndex = 0;
     const speakNext = () => {
-      // If we've been interrupted, don't speak the next utterance
       if (!isSpeakingRef.current) {
         utterancesRef.current = [];
         return;
@@ -310,21 +368,15 @@ export default function App() {
 
       if (utteranceIndex < utterancesRef.current.length) {
         const utterance = utterancesRef.current[utteranceIndex++];
-        
         const handleNext = () => {
-          // Small delay before next chunk to sound natural, and check if interrupted
           setTimeout(() => {
-            if (isSpeakingRef.current) {
-              speakNext();
-            }
+            if (isSpeakingRef.current) speakNext();
           }, 50);
         };
-
         utterance.onend = handleNext;
-        utterance.onerror = handleNext; // handle errors to not get stuck
-        speechSynthesis.speak(utterance);
+        utterance.onerror = handleNext;
+        window.speechSynthesis.speak(utterance);
       } else {
-        // Finished speaking, wait a moment for room echo to fade, then allow mic
         setTimeout(() => {
           if (isSpeakingRef.current) {
             isSpeakingRef.current = false;
@@ -332,12 +384,9 @@ export default function App() {
             setCurrentEmotion('neutral');
             lastSpeakEndTimeRef.current = Date.now();
             resetSleepTimer();
-            utterancesRef.current = []; // Clear ref
+            utterancesRef.current = [];
             if (recognitionRef.current) {
-              try {
-                // Ensure we stop the recognition to apply the new language on restart
-                recognitionRef.current.stop();
-              } catch (e) {}
+              try { recognitionRef.current.stop(); } catch (e) {}
             }
           }
         }, 500);
@@ -345,20 +394,8 @@ export default function App() {
     };
     
     if (utterances.length > 0) {
-      // Safety timeout: Sarah shouldn't speak for more than 30 seconds straight without a reset
-      const safetyTimeout = setTimeout(() => {
-        if (isSpeakingRef.current) {
-          isSpeakingRef.current = false;
-          setIsTalking(false);
-          setCurrentEmotion('neutral');
-          lastSpeakEndTimeRef.current = Date.now();
-          resetSleepTimer();
-        }
-      }, 30000);
-
       speakNext();
     } else {
-      // If there's no speech (e.g., just *giggles*), wait a moment to show the emotion
       setTimeout(() => {
         if (isSpeakingRef.current) {
           isSpeakingRef.current = false;
@@ -367,9 +404,7 @@ export default function App() {
           lastSpeakEndTimeRef.current = Date.now();
           resetSleepTimer();
           if (recognitionRef.current) {
-            try {
-              recognitionRef.current.stop();
-            } catch (e) {}
+            try { recognitionRef.current.stop(); } catch (e) {}
           }
         }
       }, 1500);
@@ -458,9 +493,8 @@ export default function App() {
 
     // CRITICAL FOR iOS/iPadOS: Speech synthesis MUST be triggered synchronously 
     // inside the user interaction event handler, BEFORE any async/await calls.
-    if (window.speechSynthesis) {
-      window.speechSynthesis.resume();
-    }
+    await unlockAudioSystem();
+
     const initialMessage = "Hi Bella! It's nice talking to you! What are you doing?";
     setMessages([{ sender: 'bot', text: initialMessage }]);
     speak(initialMessage);
@@ -698,8 +732,15 @@ export default function App() {
           <SarahFace emotion="happy" isTalking={false} />
         </div>
         <h1 className="text-5xl font-serif text-white font-bold mt-8">Hi, I'm Sarah!</h1>
-        <p className="text-xl text-gray-300 mt-4 mb-12 max-w-md">I'm so excited to talk to you! Click the button below to start.</p>
+        <p className="text-xl text-gray-300 mt-4 mb-6 max-w-md">I'm so excited to talk to you! Click the button below to start.</p>
         
+        <div className="mb-8 p-4 bg-white/5 rounded-xl border border-white/10 max-w-md">
+          <p className="text-sm text-red-400 mb-2 font-bold uppercase tracking-widest">CRITICAL iPad/iPhone Tip:</p>
+          <p className="text-xs text-gray-400 leading-relaxed">
+            If you can't hear Sarah, your <span className="text-white font-bold">Silent/Mute switch</span> (on the side of your phone) is likely ON. Please flip it OFF and turn your volume UP!
+          </p>
+        </div>
+
         {micError && (
           <div className="mb-8 p-4 bg-red-900/50 border border-red-500 text-red-200 rounded-xl max-w-md animate-bounce">
             {micError}
@@ -724,13 +765,13 @@ export default function App() {
       <div className="h-[66vh] bg-black backdrop-blur-2xl shadow-lg border-b border-white/10 flex flex-col items-center justify-center relative transition-all duration-500">
         {/* Audio Visualizer Ring */}
         <div 
-          className="absolute w-64 h-64 rounded-full border-4 border-white/20 transition-transform duration-75"
+          className={`absolute w-64 h-64 rounded-full border-4 transition-all duration-75 ${isTalking ? 'border-green-400 shadow-[0_0_30px_rgba(74,222,128,0.5)]' : 'border-white/20'}`}
           style={{ 
-            transform: `scale(${1 + (micLevel / 255) * 0.5})`,
-            opacity: micLevel > 10 ? 0.5 : 0.1
+            transform: `scale(${1 + (micLevel / 255) * 0.5 + (isTalking ? 0.1 : 0)})`,
+            opacity: (micLevel > 10 || isTalking) ? 0.8 : 0.1
           }}
         ></div>
-        <div className="scale-[2.5] transition-transform duration-500 relative z-10">
+        <div className={`scale-[2.5] transition-transform duration-500 relative z-10 ${isTalking ? 'animate-pulse' : ''}`}>
           <SarahFace emotion={currentEmotion} isTalking={isTalking} />
         </div>
         <div className="absolute bottom-8 text-center">
@@ -738,12 +779,10 @@ export default function App() {
         </div>
         <div className="absolute top-4 right-6 flex items-center gap-4">
            <button 
-             onClick={() => {
-               handleSubmit("Please stop teaching me Spanish for now, I just want to talk in English.");
-             }}
-             className="px-3 py-1 bg-white/10 hover:bg-white/20 text-white rounded-md text-[10px] font-bold transition-colors border border-white/10"
+             onClick={unlockAudioSystem}
+             className="px-3 py-1 bg-white/10 hover:bg-white/20 text-white rounded-md text-[10px] font-bold transition-colors border border-white/20 flex items-center gap-1"
            >
-             STOP LESSONS
+             <Mic size={10}/> FIX SOUND
            </button>
            <button 
              onClick={() => {

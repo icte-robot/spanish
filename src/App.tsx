@@ -28,7 +28,7 @@ export default function App() {
   const [micLevel, setMicLevel] = useState(0);
   
   const chatContainerRef = useRef<HTMLDivElement>(null);
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const recognitionRef = useRef<any>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
@@ -48,6 +48,64 @@ export default function App() {
   const lastSpeakEndTimeRef = useRef(0);
   const currentSpeakingTextRef = useRef('');
   const utterancesRef = useRef<SpeechSynthesisUtterance[]>([]);
+  const safetyTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const getAudioContext = () => {
+    if (!audioContextRef.current) {
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioContextClass) {
+        audioContextRef.current = new AudioContextClass();
+      }
+    }
+    return audioContextRef.current;
+  };
+
+  const startMicVisualization = (stream: MediaStream) => {
+    const audioContext = getAudioContext();
+    if (!audioContext) return;
+
+    if (audioContext.state === 'suspended') {
+      audioContext.resume().catch(console.error);
+    }
+
+    const source = audioContext.createMediaStreamSource(stream);
+    const analyser = audioContext.createAnalyser();
+    analyser.fftSize = 256;
+    source.connect(analyser);
+    
+    analyserRef.current = analyser;
+    
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    
+    const updateLevel = () => {
+      if (!analyserRef.current) return;
+      analyserRef.current.getByteFrequencyData(dataArray);
+      
+      let sum = 0;
+      for (let i = 0; i < bufferLength; i++) {
+        sum += dataArray[i];
+      }
+      const average = sum / bufferLength;
+      setMicLevel(average); // 0 to 255
+      
+      animationFrameRef.current = requestAnimationFrame(updateLevel);
+    };
+    
+    updateLevel();
+  };
+
+  const stopMicVisualization = () => {
+    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+    // Don't close the context, just disconnect the analyser
+    analyserRef.current = null;
+    setMicLevel(0);
+  };
+
+  const updateSpanishPhrase = (phrase: string) => {
+    setSpanishPhrase(phrase);
+    spanishPhraseRef.current = phrase;
+  };
 
   // Helper to detect if a transcript is likely an echo of what Sarah is currently saying
   const isLikelyEcho = (transcript: string, sarahText: string) => {
@@ -170,52 +228,6 @@ export default function App() {
     isLoadingRef.current = loading;
   };
 
-  const startMicVisualization = (stream: MediaStream) => {
-    if (audioContextRef.current) audioContextRef.current.close();
-    
-    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-    const analyser = audioContext.createAnalyser();
-    const source = audioContext.createMediaStreamSource(stream);
-    
-    analyser.fftSize = 256;
-    source.connect(analyser);
-    
-    audioContextRef.current = audioContext;
-    analyserRef.current = analyser;
-    
-    const bufferLength = analyser.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength);
-    
-    const updateLevel = () => {
-      if (!analyserRef.current) return;
-      analyserRef.current.getByteFrequencyData(dataArray);
-      
-      let sum = 0;
-      for (let i = 0; i < bufferLength; i++) {
-        sum += dataArray[i];
-      }
-      const average = sum / bufferLength;
-      setMicLevel(average); // 0 to 255
-      
-      animationFrameRef.current = requestAnimationFrame(updateLevel);
-    };
-    
-    updateLevel();
-  };
-
-  const stopMicVisualization = () => {
-    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-    if (audioContextRef.current) audioContextRef.current.close();
-    audioContextRef.current = null;
-    analyserRef.current = null;
-    setMicLevel(0);
-  };
-
-  const updateSpanishPhrase = (phrase: string) => {
-    setSpanishPhrase(phrase);
-    spanishPhraseRef.current = phrase;
-  };
-
   useEffect(() => {
     // Workaround for speech synthesis hanging on some browsers (especially iOS Safari)
     const interval = setInterval(() => {
@@ -241,29 +253,31 @@ export default function App() {
     };
   }, []);
 
-  const unlockAudioSystem = async () => {
+  const unlockAudioSystem = () => {
+    console.log("Attempting to unlock audio system...");
     if (!window.speechSynthesis) return;
 
     try {
-      // 1. Resume AudioContext if it exists
-      if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
-        await audioContextRef.current.resume();
+      // 1. Resume AudioContext immediately
+      const audioContext = getAudioContext();
+      if (audioContext && audioContext.state === 'suspended') {
+        audioContext.resume().catch(console.error);
       }
 
       // 2. Play a chime using Web Audio (more reliable than SpeechSynthesis for initial unlock)
-      if (audioContextRef.current) {
-        const osc = audioContextRef.current.createOscillator();
-        const gain = audioContextRef.current.createGain();
+      if (audioContext) {
+        const osc = audioContext.createOscillator();
+        const gain = audioContext.createGain();
         osc.type = 'sine';
-        osc.frequency.setValueAtTime(880, audioContextRef.current.currentTime);
-        osc.frequency.exponentialRampToValueAtTime(440, audioContextRef.current.currentTime + 0.5);
-        gain.gain.setValueAtTime(0, audioContextRef.current.currentTime);
-        gain.gain.linearRampToValueAtTime(0.5, audioContextRef.current.currentTime + 0.05);
-        gain.gain.linearRampToValueAtTime(0, audioContextRef.current.currentTime + 0.5);
+        osc.frequency.setValueAtTime(880, audioContext.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(440, audioContext.currentTime + 0.5);
+        gain.gain.setValueAtTime(0, audioContext.currentTime);
+        gain.gain.linearRampToValueAtTime(0.5, audioContext.currentTime + 0.05);
+        gain.gain.linearRampToValueAtTime(0, audioContext.currentTime + 0.5);
         osc.connect(gain);
-        gain.connect(audioContextRef.current.destination);
+        gain.connect(audioContext.destination);
         osc.start();
-        osc.stop(audioContextRef.current.currentTime + 0.5);
+        osc.stop(audioContext.currentTime + 0.5);
       }
 
       // 3. Force SpeechSynthesis out of any stuck state
@@ -275,7 +289,7 @@ export default function App() {
       prime.volume = 1.0;
       window.speechSynthesis.speak(prime);
       
-      console.log("Audio system unlocked");
+      console.log("Audio system unlock commands sent");
     } catch (e) {
       console.error("Failed to unlock audio:", e);
     }
@@ -291,6 +305,8 @@ export default function App() {
     if (window.speechSynthesis.speaking) {
       window.speechSynthesis.cancel();
     }
+    
+    if (safetyTimeoutRef.current) clearTimeout(safetyTimeoutRef.current);
     
     isSpeakingRef.current = true; // Start speaking
     setIsTalking(true);
@@ -361,6 +377,8 @@ export default function App() {
 
     let utteranceIndex = 0;
     const speakNext = () => {
+      if (safetyTimeoutRef.current) clearTimeout(safetyTimeoutRef.current);
+
       if (!isSpeakingRef.current) {
         utterancesRef.current = [];
         return;
@@ -368,15 +386,29 @@ export default function App() {
 
       if (utteranceIndex < utterancesRef.current.length) {
         const utterance = utterancesRef.current[utteranceIndex++];
+        
         const handleNext = () => {
+          if (safetyTimeoutRef.current) clearTimeout(safetyTimeoutRef.current);
           setTimeout(() => {
             if (isSpeakingRef.current) speakNext();
           }, 50);
         };
+
         utterance.onend = handleNext;
-        utterance.onerror = handleNext;
+        utterance.onerror = (e) => {
+          console.error("Speech synthesis utterance error:", e);
+          handleNext();
+        };
+
+        // Safety timeout for this specific utterance
+        safetyTimeoutRef.current = setTimeout(() => {
+          console.warn("Speech synthesis safety timeout reached for utterance index:", utteranceIndex - 1);
+          handleNext();
+        }, 10000); // 10 seconds per segment
+
         window.speechSynthesis.speak(utterance);
       } else {
+        // All parts spoken
         setTimeout(() => {
           if (isSpeakingRef.current) {
             isSpeakingRef.current = false;
@@ -396,6 +428,7 @@ export default function App() {
     if (utterances.length > 0) {
       speakNext();
     } else {
+      // Nothing to speak, reset state after a delay
       setTimeout(() => {
         if (isSpeakingRef.current) {
           isSpeakingRef.current = false;
@@ -407,7 +440,7 @@ export default function App() {
             try { recognitionRef.current.stop(); } catch (e) {}
           }
         }
-      }, 1500);
+      }, 1000);
     }
   };
 
@@ -483,26 +516,31 @@ export default function App() {
   };
 
   const handleStartListening = async () => {
+    console.log("Starting conversation...");
     setMicError(null);
     
-    // Proactively check for microphone support and access
+    // 1. CRITICAL: Synchronous audio unlock for both Web Audio and SpeechSynthesis
+    // This MUST happen directly in the click handler to be "blessed" by the user gesture.
+    unlockAudioSystem();
+
+    // 2. Proactively check for microphone support
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       setMicError("Your browser doesn't support microphone access. Please try a different browser like Chrome or Safari!");
       return;
     }
 
-    // CRITICAL FOR iOS/iPadOS: Speech synthesis MUST be triggered synchronously 
-    // inside the user interaction event handler, BEFORE any async/await calls.
-    await unlockAudioSystem();
-
+    // 3. Immediately start Sarah's greeting
     const initialMessage = "Hi Bella! It's nice talking to you! What are you doing?";
     setMessages([{ sender: 'bot', text: initialMessage }]);
     speak(initialMessage);
 
+    // 4. Request microphone access
     try {
+      console.log("Requesting microphone access...");
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       micStreamRef.current = stream;
       startMicVisualization(stream);
+      console.log("Microphone access granted");
     } catch (err: any) {
       console.error("Microphone access error:", err);
       if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
@@ -513,21 +551,33 @@ export default function App() {
       return;
     }
 
-    // Attempt to go fullscreen for a more immersive experience on 7" screens
+    // 5. Attempt to go fullscreen
     try {
       if (document.documentElement.requestFullscreen) {
         document.documentElement.requestFullscreen().catch(() => {});
       }
     } catch (e) {}
 
+    // 6. Initialize Speech Recognition
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (SpeechRecognition) {
+      console.log("Initializing speech recognition...");
       const recognition = new SpeechRecognition();
       recognition.continuous = true;
       recognition.interimResults = true;
       recognition.lang = 'en-US';
 
-      recognition.onresult = (event) => {
+      recognition.onstart = () => {
+        console.log("Speech recognition service has started. Language:", recognition.lang);
+        setIsListening(true);
+        isListeningRef.current = true;
+      };
+
+      recognition.onaudiostart = () => {
+        console.log("Audio capturing started by SpeechRecognition");
+      };
+
+      recognition.onresult = (event: any) => {
         resetSleepTimer();
 
         if (speechStartTimeRef.current === 0 && event.results.length > event.resultIndex) {
@@ -536,10 +586,7 @@ export default function App() {
 
         const isSarahSpeaking = isSpeakingRef.current;
         const timeSinceSpeakEnd = Date.now() - lastSpeakEndTimeRef.current;
-        const isJustFinished = lastSpeakEndTimeRef.current > 0 && timeSinceSpeakEnd < 1500;
-        const speechStartedDuringOrJustAfter = speechStartTimeRef.current > 0 && 
-            lastSpeakEndTimeRef.current > 0 &&
-            (speechStartTimeRef.current < lastSpeakEndTimeRef.current + 1500);
+        const isJustFinished = lastSpeakEndTimeRef.current > 0 && timeSinceSpeakEnd < 500; // Reduced further
         
         let interimTranscript = '';
         let hasFinal = false;
@@ -547,38 +594,42 @@ export default function App() {
         for (let i = event.resultIndex; i < event.results.length; ++i) {
           const result = event.results[i];
           const transcript = result[0].transcript.trim();
+          if (!transcript) continue;
 
-          const isEchoOrGibberish = isSarahSpeaking || isJustFinished || speechStartedDuringOrJustAfter;
+          const isEcho = isLikelyEcho(transcript, currentSpeakingTextRef.current);
 
-          if (isEchoOrGibberish) {
-            // Aggressive echo cancellation while speaking or immediately after
-            if (isLikelyEcho(transcript, currentSpeakingTextRef.current)) {
+          // If Sarah is speaking or just finished, we need to be careful about echos
+          if (isSarahSpeaking || isJustFinished) {
+            if (isEcho) {
+              console.log("Ignoring likely echo:", transcript);
               if (result.isFinal) speechStartTimeRef.current = 0;
-              continue; // It's an echo, ignore it completely
+              continue;
             }
 
-            // Interruption logic: Only interrupt if user explicitly says a command word
+            // Check for interruption commands
             const cleanT = transcript.toLowerCase().replace(/[^\w\s]/g, '').trim();
-            const commandWords = ['stop', 'wait', 'pause', 'quiet'];
+            const commandWords = ['stop', 'wait', 'pause', 'quiet', 'shut up', 'enough'];
             const tWords = cleanT.split(/\s+/);
             const hasCommandWord = commandWords.some(w => tWords.includes(w));
             
-            // If it has a command word and is short, interrupt
             if (hasCommandWord && tWords.length <= 3) {
+              console.log("Interruption command detected:", transcript);
               if (isSarahSpeaking) {
-                speechSynthesis.cancel();
+                window.speechSynthesis.cancel();
                 isSpeakingRef.current = false;
                 setIsTalking(false);
                 setCurrentEmotion('neutral');
               }
-              // Proceed to process this result as a command
-            } else {
+              // Allow the command itself to be processed
+            } else if (isSarahSpeaking) {
+              console.log("Ignoring speech while Sarah is talking (not an echo/command):", transcript);
               if (result.isFinal) speechStartTimeRef.current = 0;
-              continue; // Ignore everything else to prevent echo loops
+              continue;
             }
           }
 
           if (result.isFinal) {
+            console.log("Final transcript received:", transcript);
             hasFinal = true;
             speechStartTimeRef.current = 0;
             if (ignoreNextFinalRef.current) {
@@ -589,6 +640,7 @@ export default function App() {
             lastInterimTranscriptRef.current = '';
             processTranscript(transcript);
           } else {
+            console.log("Interim transcript:", transcript);
             interimTranscript += transcript + ' ';
           }
         }
@@ -596,7 +648,6 @@ export default function App() {
         if (!hasFinal && interimTranscript.trim()) {
            const currentInterim = interimTranscript.trim();
 
-           // Force process if the user has been speaking (or noise has been picked up) for more than 15 seconds
            if (speechStartTimeRef.current > 0 && Date.now() - speechStartTimeRef.current > 15000) {
               if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
               ignoreNextFinalRef.current = true;
@@ -606,9 +657,7 @@ export default function App() {
               processTranscript(finalTranscriptToProcess);
               
               if (recognitionRef.current) {
-                 try {
-                    recognitionRef.current.stop();
-                 } catch (e) {}
+                 try { recognitionRef.current.stop(); } catch (e) {}
               }
               return;
            }
@@ -617,8 +666,6 @@ export default function App() {
               lastInterimTranscriptRef.current = currentInterim;
               if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
               
-              // Set a timeout to process the interim transcript if the user stops speaking
-              // This helps when background noise prevents the recognition from firing isFinal
               silenceTimeoutRef.current = setTimeout(() => {
                  if (lastInterimTranscriptRef.current) {
                     ignoreNextFinalRef.current = true;
@@ -627,64 +674,49 @@ export default function App() {
                     speechStartTimeRef.current = 0;
                     processTranscript(finalTranscriptToProcess);
                     
-                    // Force restart recognition to clear the stuck state
                     if (recognitionRef.current) {
-                       try {
-                          recognitionRef.current.stop();
-                       } catch (e) {}
+                       try { recognitionRef.current.stop(); } catch (e) {}
                     }
                  }
-              }, 2000); // 2 seconds of silence
+              }, 2000);
            }
         }
       };
 
-      recognition.onerror = (event) => {
-        if (event.error === 'no-speech' || event.error === 'aborted') {
-          // 'no-speech' is normal when quiet
-          // 'aborted' is often triggered by our own .stop() calls
-          return;
-        }
-        if (event.error === 'network') {
-          console.warn('Speech recognition network error. Retrying...');
-          return;
-        }
+      recognition.onerror = (event: any) => {
+        if (event.error === 'no-speech' || event.error === 'aborted') return;
         
         console.error('Speech recognition error:', event.error);
         
         if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-          setMicError("I can't hear you! It looks like microphone access is blocked. Please click the microphone icon in your browser's address bar to 'Allow' access, then click 'Start Talking' again.");
+          setMicError("I can't hear you! It looks like microphone access is blocked. Please check your browser settings.");
           setIsListening(false);
           isListeningRef.current = false;
           stopMicVisualization();
-          // CRITICAL: Stop the auto-restart loop
-          if (recognitionRef.current) {
-            recognitionRef.current.onend = null;
-            try {
-              recognitionRef.current.stop();
-            } catch (e) {}
-            recognitionRef.current = null;
-          }
         }
       };
 
       recognition.onend = () => {
+        console.log("Speech recognition service ended. isListeningRef:", isListeningRef.current);
         speechStartTimeRef.current = 0;
-        // Auto-restart recognition if we're still supposed to be listening
-        // and we haven't encountered a fatal error like 'not-allowed'
-        if (recognitionRef.current && isListeningRef.current) { 
+        
+        if (isListeningRef.current) { 
+          const restartDelay = 300;
+          console.log(`Attempting to restart speech recognition in ${restartDelay}ms...`);
           setTimeout(() => {
             try {
-              if (recognitionRef.current && isListeningRef.current) {
+              if (isListeningRef.current && recognitionRef.current) {
                 const targetLang = conversationStateRef.current === 'AWAITING_PRONUNCIATION' ? 'es-ES' : 'en-US';
                 recognitionRef.current.lang = targetLang;
                 recognitionRef.current.start();
+                console.log("Speech recognition restarted successfully");
               }
             } catch (e) {
-              // Ignore 'already started' errors
+              console.warn("Failed to restart speech recognition (might already be running):", e);
             }
-          }, 400); 
+          }, restartDelay); 
         } else {
+          console.log("Speech recognition stopped permanently");
           setIsListening(false);
           isListeningRef.current = false;
           stopMicVisualization();
@@ -692,28 +724,15 @@ export default function App() {
       };
 
       recognitionRef.current = recognition;
-      recognition.start();
-      setIsListening(true);
-      isListeningRef.current = true;
-      resetSleepTimer();
-
+      try {
+        recognition.start();
+        console.log("Initial speech recognition start called");
+      } catch (e) {
+        console.error("Failed to start initial speech recognition:", e);
+      }
     } else {
       console.warn('Speech recognition not supported.');
     }
-
-    return () => {
-      if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
-      stopMicVisualization();
-      if (micStreamRef.current) {
-        micStreamRef.current.getTracks().forEach(track => track.stop());
-      }
-      if (recognitionRef.current) {
-        recognitionRef.current.onend = null;
-        recognitionRef.current.stop();
-        recognitionRef.current = null;
-      }
-      speechSynthesis.cancel();
-    };
   };
   
   const getPlaceholder = () => {

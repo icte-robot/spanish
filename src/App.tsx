@@ -281,29 +281,14 @@ export default function App() {
         audioContext.resume().catch(console.error);
       }
 
-      // 2. Play a chime using Web Audio (more reliable than SpeechSynthesis for initial unlock)
-      if (audioContext) {
-        const osc = audioContext.createOscillator();
-        const gain = audioContext.createGain();
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(880, audioContext.currentTime);
-        osc.frequency.exponentialRampToValueAtTime(440, audioContext.currentTime + 0.5);
-        gain.gain.setValueAtTime(0, audioContext.currentTime);
-        gain.gain.linearRampToValueAtTime(0.5, audioContext.currentTime + 0.05);
-        gain.gain.linearRampToValueAtTime(0, audioContext.currentTime + 0.5);
-        osc.connect(gain);
-        gain.connect(audioContext.destination);
-        osc.start();
-        osc.stop(audioContext.currentTime + 0.5);
-      }
-
-      // 3. Force SpeechSynthesis out of any stuck state
+      // 2. Force SpeechSynthesis out of any stuck state
       window.speechSynthesis.cancel();
       window.speechSynthesis.resume();
 
-      // 4. Speak a real word to truly "bless" the engine
+      // 3. Speak a real word to truly "bless" the engine
       // On iOS, we sometimes need to speak an empty string first
       const silent = new SpeechSynthesisUtterance('');
+      silent.volume = 0;
       window.speechSynthesis.speak(silent);
 
       const prime = new SpeechSynthesisUtterance('Hello Bella, I am ready!');
@@ -311,7 +296,7 @@ export default function App() {
       prime.rate = 1.0;
       window.speechSynthesis.speak(prime);
       
-      console.log("Audio system unlock commands sent");
+      console.log("Audio system unlock commands sent. Voices available:", window.speechSynthesis.getVoices().length);
     } catch (e) {
       console.error("Failed to unlock audio:", e);
     }
@@ -435,8 +420,15 @@ export default function App() {
         safetyTimeoutRef.current = setTimeout(() => {
           console.warn("Speech synthesis safety timeout reached for utterance index:", utteranceIndex - 1);
           handleNext();
-        }, 10000); // 10 seconds per segment
+        }, 12000); // 12 seconds per segment
 
+        // Kick for iOS before each segment
+        if (isIOS) {
+          const kick = new SpeechSynthesisUtterance('');
+          kick.volume = 0;
+          window.speechSynthesis.speak(kick);
+        }
+        
         window.speechSynthesis.speak(utterance);
       } else {
         // All parts spoken
@@ -821,11 +813,15 @@ export default function App() {
             opacity: (micLevel > 10 || isTalking) ? 0.8 : 0.1
           }}
         ></div>
-        <div className={`scale-[1.4] md:scale-[2.0] transition-transform duration-500 relative z-10 ${isTalking ? 'animate-pulse' : ''}`}>
+        <div className={`scale-[1.0] sm:scale-[1.2] md:scale-[1.8] transition-transform duration-500 relative z-10 ${isTalking ? 'animate-pulse' : ''}`}>
           <SarahFace emotion={currentEmotion} isTalking={isTalking} />
         </div>
-        <div className="absolute bottom-8 text-center">
-          {/* Text and status indicators removed so the face stands alone */}
+        <div className="absolute bottom-8 left-0 right-0 px-8 text-center pointer-events-none z-20">
+          {isTalking && currentSpeakingTextRef.current && (
+            <p className="text-white/90 text-lg md:text-2xl font-serif italic drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)] animate-pulse">
+              "{currentSpeakingTextRef.current.replace(/\*.*?\*/g, '').trim()}"
+            </p>
+          )}
         </div>
         <div className="absolute top-4 right-6 flex items-center gap-2 md:gap-4">
            {isIOS && (
